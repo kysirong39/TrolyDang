@@ -20,11 +20,14 @@ import {
   Layers,
   RotateCcw,
   Copy,
-  Check
+  Check,
+  Key,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
+import mammoth from 'mammoth';
 import { Document, Message } from './types.ts';
 import { db, auth } from './lib/firebase.ts';
 import { 
@@ -119,6 +122,8 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -126,6 +131,16 @@ export default function App() {
   const migrationStarted = useRef(false);
   const [user, setUser] = useState<User | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
+
+  const getApiKey = () => {
+    const customKey = (localStorage.getItem('GEMINI_API_KEY') || userApiKey || '').trim();
+    if (customKey && customKey.length > 10) return customKey;
+
+    const envKey = (process.env.TrolyDang_API_Key || process.env.GEMINI_API_KEY || "").trim();
+    if (envKey && envKey.length > 10 && !envKey.includes('MY_') && !envKey.includes('YOUR_')) return envKey;
+
+    return '';
+  };
 
   // Initialize data on load
   useEffect(() => {
@@ -288,6 +303,49 @@ export default function App() {
     });
   };
 
+  const parseFileClientSide = async (file: File): Promise<Document> => {
+    const fileName = file.name;
+    const ext = fileName.split('.').pop()?.toLowerCase() || '';
+    let content = '';
+
+    if (['txt', 'md', 'json', 'csv', 'xml', 'html', 'log'].includes(ext)) {
+      content = await file.text();
+    } else if (ext === 'docx' || ext === 'doc') {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        content = result.value;
+      } catch (err) {
+        console.warn('Mammoth extraction failed:', err);
+        content = await file.text().catch(() => `Tài liệu Word: ${fileName}`);
+      }
+    } else if (ext === 'pdf') {
+      try {
+        const buffer = await file.arrayBuffer();
+        const textDecoder = new TextDecoder('utf-8', { fatal: false });
+        const rawText = textDecoder.decode(buffer);
+        const matches = rawText.match(/[\x20-\x7E\xA0-\xFF\u0100-\u017F\u0180-\u024F\u1EA0-\u1EF9\n\r\t]+/g);
+        if (matches && matches.join(' ').length > 100) {
+          content = matches.join(' ').replace(/\s+/g, ' ');
+        } else {
+          content = `Nội dung tài liệu PDF: ${fileName} (Đã thêm vào kho nghiệp vụ).`;
+        }
+      } catch {
+        content = `Tài liệu PDF: ${fileName}`;
+      }
+    } else {
+      content = await file.text().catch(() => `Tài liệu: ${fileName}`);
+    }
+
+    return {
+      id: Date.now().toString(),
+      name: fileName,
+      type: 'text',
+      uploadDate: new Date().toLocaleString('vi-VN'),
+      content: content.trim() || `Nội dung tài liệu ${fileName}`
+    };
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -299,33 +357,36 @@ export default function App() {
     }
 
     setIsProcessingFile(true);
-    const formData = new FormData();
-    formData.append('file', file);
+    let newDoc: Document | null = null;
 
     try {
-      const response = await fetch('/api/process-file', {
-        method: 'POST',
-        body: formData,
-      });
+      // 1. Try server endpoint first if running with backend
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/process-file', {
+          method: 'POST',
+          body: formData,
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = 'Failed to process file';
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.error || errorMessage;
-        } catch {
-          errorMessage = `${errorMessage} (${response.status}): ${errorText.substring(0, 100)}`;
+        if (response.ok) {
+          newDoc = await response.json();
         }
-        throw new Error(errorMessage);
+      } catch (err) {
+        console.warn('Server process-file endpoint unavailable, using client-side fallback:', err);
       }
 
-      const newDoc = await response.json();
-      // Save to Firestore for permanent sync
-      try {
-        await setDoc(doc(db, 'documents', newDoc.id), newDoc);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, `documents/${newDoc.id}`);
+      // 2. Client-side fallback if server route is missing or fails (e.g. on GitHub Pages)
+      if (!newDoc) {
+        newDoc = await parseFileClientSide(file);
+      }
+
+      if (newDoc) {
+        try {
+          await setDoc(doc(db, 'documents', newDoc.id), newDoc);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `documents/${newDoc.id}`);
+        }
       }
     } catch (error: any) {
       console.error('Error uploading file:', error);
@@ -358,8 +419,10 @@ export default function App() {
         handleFirestoreError(error, OperationType.DELETE, `documents/${id}`);
       }
       
-      // Also notify server to delete from its local cache if it still has it
-      await fetch(`/api/documents/${id}`, { method: 'DELETE' });
+      // Also notify server to delete from its local cache if server is running
+      try {
+        await fetch(`/api/documents/${id}`, { method: 'DELETE' });
+      } catch { /* ignore server 404 on static hosting */ }
     } catch (error: any) {
       console.error('Error deleting document:', error);
       let msg = error.message;
@@ -429,10 +492,18 @@ export default function App() {
 
       userParts.push({ text: `${modeGuidance}\n\nCâu hỏi: ${finalInput}` });
 
-      const apiKey = (process.env.TrolyDang_API_Key || process.env.GEMINI_API_KEY || "").trim();
+      const apiKey = getApiKey();
       
-      if (!apiKey || apiKey.length < 10 || apiKey.includes('MY_')) {
-        throw new Error('MISSING_API_KEY');
+      if (!apiKey) {
+        setShowKeyModal(true);
+        setIsLoading(false);
+        setMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: 'Báo cáo đồng chí: Hệ thống chưa phát hiện **Gemini API Key**. Đồng chí vui lòng bấm nút **🔑 Khóa API** góc trên bên phải để thiết lập API Key.',
+          timestamp: new Date().toLocaleTimeString(),
+        }]);
+        return;
       }
 
       const ai = new GoogleGenAI({ apiKey });
@@ -442,21 +513,47 @@ export default function App() {
         parts: [{ text: m.content }]
       }));
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          ...history,
-          { role: 'user', parts: userParts }
-        ],
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
+      // Multi-model fallback list
+      const modelsToTry = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-3-flash-preview"
+      ];
+
+      let responseText = '';
+      let lastErr: any = null;
+
+      for (const modelName of modelsToTry) {
+        try {
+          const res = await ai.models.generateContent({
+            model: modelName,
+            contents: [
+              ...history,
+              { role: 'user', parts: userParts }
+            ],
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION,
+            }
+          });
+          if (res.text) {
+            responseText = res.text;
+            break;
+          }
+        } catch (err: any) {
+          console.warn(`Model ${modelName} call failed, trying next:`, err?.message || err);
+          lastErr = err;
         }
-      });
+      }
+
+      if (!responseText && lastErr) {
+        throw lastErr;
+      }
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.text || 'Xin lỗi, tôi không thể trả lời câu hỏi này lúc này.',
+        content: responseText || 'Xin lỗi, tôi không thể trả lời câu hỏi này lúc này.',
         timestamp: new Date().toLocaleTimeString(),
       };
 
@@ -467,7 +564,7 @@ export default function App() {
       const errorMsg = error.message || String(error);
 
       if (errorMsg.includes('MISSING_API_KEY') || errorMsg.includes('401')) {
-        errorMessage = 'Không tìm thấy API Key hợp lệ. Vui lòng kiểm tra lại thiết lập khóa GEMINI_API_KEY trong menu Secrets (biểu tượng khóa bên trái).';
+        errorMessage = 'Không tìm thấy API Key hợp lệ. Vui lòng bấm vào nút 🔑 Khóa API ở góc trên để cấu hình Gemini API Key.';
       } else if (errorMsg.includes('429')) {
         errorMessage = 'Hệ thống AI đang quá tải hoặc hết hạn mức (Quota exceeded). Vui lòng thử lại sau giây lát.';
       } else if (errorMsg.includes('404')) {
@@ -617,7 +714,15 @@ export default function App() {
             </div>
           </div>
           
-          <div className="hidden md:flex items-center gap-4 text-xs font-medium text-[#6B7280]">
+          <div className="flex items-center gap-2 md:gap-4 text-xs font-medium text-[#6B7280]">
+             <button 
+              onClick={() => setShowKeyModal(true)}
+              className="flex items-center gap-1 cursor-pointer hover:text-[#DA251D] transition-colors bg-amber-50 hover:bg-amber-100 text-amber-800 px-2 py-1 rounded-lg border border-amber-200 shadow-sm"
+              title="Cấu hình Gemini API Key"
+             >
+                <Key size={14} className="text-amber-600" />
+                <span className="font-bold text-[11px]">Khóa API</span>
+             </button>
              <button 
               onClick={() => setShowHistory(!showHistory)}
               className="flex items-center gap-1 cursor-pointer hover:text-[#DA251D] transition-colors"
@@ -626,12 +731,12 @@ export default function App() {
              </button>
              <button 
               onClick={saveToHistory}
-              className="text-[10px] px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200"
+              className="text-[10px] px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200 hidden sm:inline"
              >
                Kết thúc & Lưu
              </button>
-             <span className="w-px h-4 bg-[#E5E7EB]"></span>
-             <span className="flex items-center gap-1 text-[#DA251D]"><Flag size={14} /> Việt Nam</span>
+             <span className="w-px h-4 bg-[#E5E7EB] hidden sm:inline"></span>
+             <span className="hidden md:flex items-center gap-1 text-[#DA251D]"><Flag size={14} /> Việt Nam</span>
           </div>
         </header>
 
@@ -870,6 +975,75 @@ export default function App() {
               <div className="w-12 h-12 border-4 border-[#DA251D]/20 border-t-[#DA251D] rounded-full animate-spin mb-4" />
               <p className="font-bold text-[#DA251D] animate-pulse uppercase tracking-widest text-xs">Đang trích xuất nội dung văn bản...</p>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* API Key Modal */}
+        <AnimatePresence>
+          {showKeyModal && (
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-[#E5E7EB]"
+              >
+                <div className="flex items-center justify-between mb-4 border-b pb-3">
+                  <h3 className="font-bold text-base text-[#DA251D] flex items-center gap-2 uppercase tracking-tight font-serif">
+                    <Key size={18} className="text-amber-600" /> Cấu hình Gemini API Key
+                  </h3>
+                  <button onClick={() => setShowKeyModal(false)} className="text-gray-400 hover:text-gray-600 p-1">
+                    <X size={18} />
+                  </button>
+                </div>
+                <p className="text-xs text-gray-600 mb-4 leading-relaxed">
+                  Thiết lập API Key giúp ứng dụng hoạt động 100% độc lập và ổn định khi xuất bản lên GitHub Pages hoặc lưu trữ tĩnh. Khóa được bảo mật và lưu trực tiếp trong trình duyệt của đồng chí.
+                </p>
+                <div className="mb-4">
+                  <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                    Gemini API Key
+                  </label>
+                  <input
+                    type="password"
+                    value={userApiKey}
+                    onChange={(e) => setUserApiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full border border-gray-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-[#DA251D] focus:outline-none bg-gray-50 font-mono"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <a 
+                    href="https://aistudio.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="text-[11px] text-blue-600 hover:underline font-medium"
+                  >
+                    Lấy API Key miễn phí ↗
+                  </a>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        localStorage.removeItem('GEMINI_API_KEY');
+                        setUserApiKey('');
+                        setShowKeyModal(false);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs text-gray-500 hover:bg-gray-100"
+                    >
+                      Xóa khóa
+                    </button>
+                    <button
+                      onClick={() => {
+                        localStorage.setItem('GEMINI_API_KEY', userApiKey.trim());
+                        setShowKeyModal(false);
+                      }}
+                      className="bg-[#DA251D] text-white px-4 py-2 rounded-xl font-bold text-xs uppercase hover:bg-red-700 transition-all shadow-md"
+                    >
+                      Lưu thay đổi
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
           )}
         </AnimatePresence>
       </main>

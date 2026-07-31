@@ -1,10 +1,20 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import defaultConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const configToUse = defaultConfig || {
+  projectId: "gen-lang-client-0099939117",
+  appId: "1:203482224009:web:46ebdf676c4a9dd5c8bd58",
+  apiKey: "AIzaSyChUKXfKPDowBDOehl8EQKu7DDDPyjZ9qs",
+  authDomain: "gen-lang-client-0099939117.firebaseapp.com",
+  firestoreDatabaseId: "ai-studio-f9f9707f-b51c-4e60-829d-14bd0bb20a21",
+  storageBucket: "gen-lang-client-0099939117.firebasestorage.app",
+  messagingSenderId: "203482224009"
+};
+
+const app = initializeApp(configToUse);
+export const db = getFirestore(app, configToUse.firestoreDatabaseId);
 export const auth = getAuth();
 
 // Test connection

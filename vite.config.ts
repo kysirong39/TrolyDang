@@ -6,10 +6,11 @@ import {defineConfig, loadEnv} from 'vite';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
+    base: './',
     plugins: [react(), tailwindcss()],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ""),
-      'process.env.TrolyDang_API_Key': JSON.stringify(env.TrolyDang_API_Key || ""),
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || ""),
+      'process.env.TrolyDang_API_Key': JSON.stringify(env.TrolyDang_API_Key || env.VITE_TrolyDang_API_Key || process.env.TrolyDang_API_Key || ""),
     },
     resolve: {
       alias: {
