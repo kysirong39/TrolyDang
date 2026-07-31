@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI } from '@google/genai';
 
 const require = createRequire(import.meta.url);
 let pdf: any;
@@ -83,6 +84,42 @@ const upload = multer({
 
 // API Routes
 const apiRouter = express.Router();
+
+// Chat endpoint
+apiRouter.post('/chat', async (req: Request, res: Response) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY || req.body.apiKey;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Không tìm thấy GEMINI_API_KEY trên máy chủ' });
+    }
+
+    const { messages, systemInstruction } = req.body;
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: { 'User-Agent': 'aistudio-build' }
+      }
+    });
+
+    const contents = (messages || []).map((m: any) => ({
+      role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }]
+    }));
+
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents,
+      config: {
+        systemInstruction: systemInstruction || ''
+      }
+    });
+
+    res.json({ text: result.text });
+  } catch (err: any) {
+    console.error('[API Chat Error]:', err?.message || err);
+    res.status(500).json({ error: err?.message || 'Lỗi khi gọi mô hình AI' });
+  }
+});
 
 // Get all documents
 apiRouter.get('/documents', (req, res) => {

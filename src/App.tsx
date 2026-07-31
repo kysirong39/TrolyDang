@@ -536,6 +536,7 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            apiKey,
             messages: cleanMessages.map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: userParts.map((p: any) => p.text).join('\n') }]),
             systemInstruction: SYSTEM_INSTRUCTION
           })
@@ -555,7 +556,7 @@ export default function App() {
         try {
           const ai = new GoogleGenAI({ apiKey });
           const res = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
+            model: 'gemini-2.5-flash',
             contents,
             config: {
               systemInstruction: SYSTEM_INSTRUCTION
@@ -565,16 +566,17 @@ export default function App() {
             responseText = res.text;
           }
         } catch (err: any) {
-          console.warn('[SDK] gemini-1.5-flash call failed:', err?.message || err);
+          console.warn('[SDK] gemini-2.5-flash call failed:', err?.message || err);
         }
       }
 
       // 3. Client-side direct REST API fallback
       if (!responseText) {
         const modelsToTry = [
-          "gemini-1.5-flash",
-          "gemini-2.0-flash",
-          "gemini-1.5-pro"
+          "gemini-2.5-flash",
+          "gemini-3.6-flash",
+          "gemini-flash-latest",
+          "gemini-2.5-pro"
         ];
 
         let lastErr: any = null;
