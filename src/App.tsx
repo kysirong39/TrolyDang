@@ -94,8 +94,8 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Notice: ', JSON.stringify(errInfo));
+  return errInfo;
 }
 
 const SYSTEM_INSTRUCTION = `
@@ -506,48 +506,84 @@ export default function App() {
         return;
       }
 
-      const ai = new GoogleGenAI({ apiKey });
-      
       const history = messages.slice(1).map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }]
       }));
 
-      // Multi-model fallback list
-      const modelsToTry = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-3-flash-preview"
-      ];
-
       let responseText = '';
-      let lastErr: any = null;
 
-      for (const modelName of modelsToTry) {
-        try {
-          const res = await ai.models.generateContent({
-            model: modelName,
-            contents: [
-              ...history,
-              { role: 'user', parts: userParts }
-            ],
-            config: {
-              systemInstruction: SYSTEM_INSTRUCTION,
-            }
-          });
-          if (res.text) {
-            responseText = res.text;
-            break;
+      // 1. Try server proxy endpoint first if running on fullstack container
+      try {
+        const serverRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: messages.slice(1).map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: userParts.map((p: any) => p.text).join('\n') }]),
+            systemInstruction: SYSTEM_INSTRUCTION
+          })
+        });
+        if (serverRes.ok) {
+          const data = await serverRes.json();
+          if (data.text) {
+            responseText = data.text;
           }
-        } catch (err: any) {
-          console.warn(`Model ${modelName} call failed, trying next:`, err?.message || err);
-          lastErr = err;
         }
+      } catch {
+        // Ignored on static hosting (e.g. GitHub Pages)
       }
 
-      if (!responseText && lastErr) {
-        throw lastErr;
+      // 2. Client-side direct REST API call if server proxy was unavailable
+      if (!responseText) {
+        const modelsToTry = [
+          "gemini-2.5-flash",
+          "gemini-2.0-flash",
+          "gemini-1.5-flash",
+          "gemini-2.5-pro"
+        ];
+
+        let lastErr: any = null;
+
+        for (const modelName of modelsToTry) {
+          try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+            const payload = {
+              systemInstruction: {
+                parts: [{ text: SYSTEM_INSTRUCTION }]
+              },
+              contents: [
+                ...history,
+                { role: 'user', parts: userParts }
+              ]
+            };
+
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => ({}));
+              const msg = errBody.error?.message || `HTTP ${res.status}`;
+              throw new Error(msg);
+            }
+
+            const resData = await res.json();
+            const textCandidate = resData?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (textCandidate) {
+              responseText = textCandidate;
+              break;
+            }
+          } catch (err: any) {
+            console.warn(`[REST] Model ${modelName} failed:`, err?.message || err);
+            lastErr = err;
+          }
+        }
+
+        if (!responseText && lastErr) {
+          throw lastErr;
+        }
       }
 
       const assistantMessage: Message = {
