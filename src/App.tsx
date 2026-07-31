@@ -506,10 +506,27 @@ export default function App() {
         return;
       }
 
-      const history = messages.slice(1).map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }]
-      }));
+      const cleanMessages = messages.slice(1).filter(m => {
+        if (!m.content) return false;
+        if (m.content.includes('Lỗi hệ thống:') || m.content.includes('Báo cáo đồng chí:') || m.content.includes('Quota exceeded')) return false;
+        return true;
+      });
+
+      const contents: { role: 'user' | 'model'; parts: { text: string }[] }[] = [];
+      for (const m of cleanMessages) {
+        const role = m.role === 'assistant' ? 'model' : 'user';
+        if (contents.length > 0 && contents[contents.length - 1].role === role) {
+          contents[contents.length - 1].parts[0].text += `\n\n${m.content}`;
+        } else {
+          contents.push({ role, parts: [{ text: m.content }] });
+        }
+      }
+
+      if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+        contents[contents.length - 1].parts.push(...userParts);
+      } else {
+        contents.push({ role: 'user', parts: userParts });
+      }
 
       let responseText = '';
 
@@ -519,7 +536,7 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            messages: messages.slice(1).map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: userParts.map((p: any) => p.text).join('\n') }]),
+            messages: cleanMessages.map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: userParts.map((p: any) => p.text).join('\n') }]),
             systemInstruction: SYSTEM_INSTRUCTION
           })
         });
@@ -533,13 +550,31 @@ export default function App() {
         // Ignored on static hosting (e.g. GitHub Pages)
       }
 
-      // 2. Client-side direct REST API call if server proxy was unavailable
+      // 2. Client-side SDK attempt
+      if (!responseText) {
+        try {
+          const ai = new GoogleGenAI({ apiKey });
+          const res = await ai.models.generateContent({
+            model: 'gemini-1.5-flash',
+            contents,
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION
+            }
+          });
+          if (res.text) {
+            responseText = res.text;
+          }
+        } catch (err: any) {
+          console.warn('[SDK] gemini-1.5-flash call failed:', err?.message || err);
+        }
+      }
+
+      // 3. Client-side direct REST API fallback
       if (!responseText) {
         const modelsToTry = [
-          "gemini-2.5-flash",
-          "gemini-2.0-flash",
           "gemini-1.5-flash",
-          "gemini-2.5-pro"
+          "gemini-2.0-flash",
+          "gemini-1.5-pro"
         ];
 
         let lastErr: any = null;
@@ -551,10 +586,7 @@ export default function App() {
               systemInstruction: {
                 parts: [{ text: SYSTEM_INSTRUCTION }]
               },
-              contents: [
-                ...history,
-                { role: 'user', parts: userParts }
-              ]
+              contents
             };
 
             const res = await fetch(url, {
@@ -599,14 +631,14 @@ export default function App() {
       let errorMessage = 'Đã xảy ra lỗi khi kết nối với hệ thống AI.';
       const errorMsg = error.message || String(error);
 
-      if (errorMsg.includes('MISSING_API_KEY') || errorMsg.includes('401')) {
-        errorMessage = 'Không tìm thấy API Key hợp lệ. Vui lòng bấm vào nút 🔑 Khóa API ở góc trên để cấu hình Gemini API Key.';
-      } else if (errorMsg.includes('429')) {
-        errorMessage = 'Hệ thống AI đang quá tải hoặc hết hạn mức (Quota exceeded). Vui lòng thử lại sau giây lát.';
+      if (errorMsg.includes('MISSING_API_KEY') || errorMsg.includes('401') || errorMsg.includes('API key not valid')) {
+        errorMessage = 'Không tìm thấy API Key hợp lệ. Vui lòng bấm vào nút **🔑 Khóa API** ở góc trên để nhập Gemini API Key chính xác.';
+      } else if (errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('Quota') || errorMsg.includes('RESOURCE_EXHAUSTED')) {
+        errorMessage = 'Khóa API hiện tại đã vượt quá hạn mức miễn phí của Google (Quota / Rate Limit Exceeded). Đồng chí vui lòng bấm nút **🔑 Khóa API** ở góc trên bên phải để thay thế API Key mới từ Google AI Studio (hoặc thử lại sau 1-2 phút).';
       } else if (errorMsg.includes('404')) {
-        errorMessage = 'Không tìm thấy mô hình AI được yêu cầu (Model not found). Đang cập nhật hệ thống...';
+        errorMessage = 'Mô hình AI hiện tại đang được bảo trì. Vui lòng thử lại sau giây lát.';
       } else {
-        errorMessage = `Lỗi hệ thống: ${errorMsg}`;
+        errorMessage = `Lỗi hệ thống AI: ${errorMsg}`;
       }
 
       setMessages(prev => [...prev, {
