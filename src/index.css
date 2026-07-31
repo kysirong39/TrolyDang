@@ -1,0 +1,64 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "IBM Plex Serif", serif;
+}
+
+body {
+  @apply antialiased text-[#212529] bg-[#F3F4F6];
+}
+
+/* Tinh chỉnh hiển thị Markdown trong Chat */
+.markdown-container h1, 
+.markdown-container h2, 
+.markdown-container h3 {
+  @apply font-bold text-[#DA251D] mt-4 mb-2 tracking-tight;
+}
+
+.markdown-container h1 { @apply text-lg; }
+.markdown-container h2 { @apply text-base; }
+.markdown-container h3 { @apply text-sm; }
+
+.markdown-container p {
+  @apply mb-3 leading-relaxed;
+}
+
+.markdown-container strong {
+  @apply font-bold text-[#212529] bg-amber-50 px-0.5 rounded;
+}
+
+.markdown-container ul, 
+.markdown-container ol {
+  @apply mb-3 pl-5 space-y-1;
+}
+
+.markdown-container ul {
+  @apply list-disc;
+}
+
+.markdown-container ol {
+  @apply list-decimal;
+}
+
+.markdown-container li {
+  @apply leading-relaxed;
+}
+
+.markdown-container table {
+  @apply w-full border-collapse border border-gray-200 my-4 text-xs;
+}
+
+.markdown-container th, 
+.markdown-container td {
+  @apply border border-gray-200 p-2 text-left;
+}
+
+.markdown-container th {
+  @apply bg-gray-50 font-bold;
+}
+
+.markdown-container blockquote {
+  @apply border-l-4 border-amber-400 pl-4 italic text-gray-600 my-4;
+}

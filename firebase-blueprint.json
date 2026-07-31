@@ -1,0 +1,25 @@
+{
+  "entities": {
+    "Document": {
+      "title": "Document",
+      "description": "A document in the repository",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "image"] },
+        "content": { "type": "string" },
+        "data": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "uploadDate": { "type": "string" }
+      },
+      "required": ["id", "name", "type", "uploadDate"]
+    }
+  },
+  "firestore": {
+    "/documents/{documentId}": {
+      "schema": "Document",
+      "description": "Collection of documents in the repository"
+    }
+  }
+}

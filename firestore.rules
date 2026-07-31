@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Document Validation
+    function isValidDocument(data) {
+      return data.keys().hasAll(['id', 'name', 'type', 'uploadDate']) &&
+             data.id is string && data.id.size() <= 64 &&
+             data.name is string && data.name.size() <= 255 &&
+             data.type in ['text', 'image'] &&
+             data.uploadDate is string &&
+             (!('content' in data) || (data.content is string && data.content.size() <= 1048576)) &&
+             (!('data' in data) || (data.data is string && data.data.size() <= 2097152));
+    }
+
+    match /documents/{documentId} {
+      // Allow everyone to read documents so public link works
+      allow get, list: if true;
+      
+      // Allow authenticated users to create/update/delete
+      // In a real app, we might check for specific roles
+      allow create: if isSignedIn() && isValidId(documentId) && isValidDocument(incoming());
+      
+      allow update: if isSignedIn() && isValidId(documentId) && 
+                      isValidDocument(incoming()) &&
+                      incoming().id == existing().id; // Immutable ID
+                      
+      allow delete: if isSignedIn();
+    }
+  }
+}
